@@ -1,0 +1,214 @@
+---
+title: "MLEARN 410B -- Final Project"
+author: "Anton Kostov -- antonbk@uw.edu"
+date: "May 31, 2017"
+output:
+  html_notebook: default
+  html_document: default
+---
+
+# Predicting Seattle Home Sale Prices
+
+## Data Set
+
+A great data set is available from Kaggle containing Seattle home sales data from May'2014 to May'2015 (https://www.kaggle.com/harlfoxem/housesalesprediction). Data includes the date of the sale, # bedrooms, # bathrooms, square feet, condition and some other useful features. The detailed features description is as follows:
+
+<pre>
+Name          Type     Description
+
+id            Numeric  Unique identifier.
+date          String   Date house was sold.
+price         Numeric  Price is prediction target.
+bedrooms      Numeric  Number of Bedrooms/House.
+bathrooms     Numeric  Number of bathrooms/House.
+sqft_living   Numeric  Square footage of the home.
+sqft_lot      Numeric  Square footage of the lot.
+floors        Numeric  Total floors (levels) in house.
+waterfront    Numeric  House which has a view to a waterfront.
+view          Numeric  Has been viewed.
+condition     Numeric  How good the condition is (Overall).
+grade         Numeric  Grade of the house.
+sqft_above    Numeric  Square footage of house apart from basement.
+sqft_basement Numeric  Square footage of the basement.
+yr_built      Numeric  Built Year.
+yr_renovated  Numeric  Year when house was renovated.
+zipcode       Numeric  Zipcode.
+lat           Numeric  Latitude coordinate.
+long          Numeric  Longitude coordinate.
+sqft_living15 Numeric  Living room area in 2015 (implies-- some renovations). This might or might not have affected the lotsize area.
+sqft_lot15    Numeric  Lot size area in 2015 (implies-- some renovations).
+</pre>
+
+
+### Getting the raw data into R.
+```{r}
+rawdata = read.csv("c:/data/kc_house_data.csv",sep=",")
+summary(rawdata)
+head(rawdata, 3)
+
+```
+
+### Data Preparation
+
+The date is given in inconvenient format. Assuming the time zone is the same as Seattle's, we convert it to an Epoch numeric (milliseconds since 1970-01-01 UTC). Also, by examing the data it seems the precision is up to the day level, so hours/minutes/seconds can be ignored.
+
+```{r}
+data = rawdata
+data[c("date")] = lapply(data[c("date")], function(x) as.numeric(as.POSIXct(x, format='%Y%m%d', tz='America/Los_Angeles')))
+```
+
+In addition, its better to treat the zip as a factor (categorical value) rather than a number as there is no quantitative relationship between the different zip codes. "View" and "waterfront" are boolean flags so they can be treated as factors too.
+
+```{r}
+data[c("zipcode")] = lapply(data[c("zipcode")], function(x) as.factor(x))
+data[c("view")] = lapply(data[c("view")], function(x) as.factor(x))
+data[c("waterfront")] = lapply(data[c("waterfront")], function(x) as.factor(x))
+data[c("condition")] = lapply(data[c("condition")], function(x) as.factor(x))
+```
+
+The "id" feature is not important for predicting the price as it is just an unique identifier. Dropping the "id" column as not needed.
+```{r}
+data = subset(data, select=-1)
+```
+
+Some of the predictors might not be statistically important for the price prediction. If included while training the model they would introduce noise and misguide the training algorithm. By using a linear regression over the entire prepared data, significance codes can be obtained and based on that these less important predictors can be spotted and dropped.
+
+```{r}
+summary(lm(price~., data=data))
+```
+
+Looks like some conditions and zip codes are important, others not so much. The "lat", "long", "sqft_living15" and "sqft_lot15" seem not too important. All of these observations make intuitive sense as buyers may be paying attention to specific zip codes only if, say, they are prestigious. The lattitue and longitude are not explicitly an important data for them too. Dropping these predictors. Zip codes can be discarded too as most of the categories are not important (maybe a few zip codes can be desirable from buyers perspective but certainly not all).
+```{r}
+data = subset(data, select=-20) # sqft_lot15
+data = subset(data, select=-19) # sqft_living15
+data = subset(data, select=-18) # long
+data = subset(data, select=-17) # lat
+data = subset(data, select=-16) # zipcode
+```
+
+Next the prepared data is split based on the third quartile value of the sale date (the most recent quartile will be used for testing, the previous data for training):
+```{r}
+# Get 3rd quartile boundary:
+summary(data$date)
+# Split
+datasplit = I(data$date > 1.424e+09)
+train = subset(data[], datasplit == F)
+test = subset(data[], datasplit == T)
+# Drop date, no longer needed
+data = subset(data, select=-1)
+```
+
+## Training a Random Forest Model
+
+The approach of choise is the Random Forest algorithm using the "randomForest" package in R. 
+
+```{r}
+library(randomForest)
+```
+
+Two parameters will be manually fine-tuned: the number of trees (ntrees parameter) and the max. number of leaf nodes for each tree (maxnodes parameter). First, the maxnodes is fixed to 10000, and ntrees initial value set to 2. As a measure of the prediction quality the root of the mean squared error seems appropriate.
+
+```{r}
+rfm_2_10k = randomForest(price~., data=train, ntree=2, maxnodes=10000)
+predictions = predict(rfm_2_10k, test)
+print(sprintf("Mean error RFM_2_10K: %s", toString(sqrt(mean((predictions-test$price)^2)))))
+```
+
+Training another model, this time with much shallower trees (maxnodes=10) but large number of trees (ntrees=2000):
+```{r}
+rfm_2k_10 = randomForest(price~., data=train, ntree=2000, maxnodes=10)
+predictions = predict(rfm_2k_10, test)
+print(sprintf("Mean error RFM_2K_10: %s", toString(sqrt(mean((predictions-test$price)^2)))))
+```
+
+Seems that both parameters need to be increased to improve accuracy. Trying a third model with ntree=2000 and maxnodes=1000:
+```{r}
+rfm_2k_1k = randomForest(price~., data=train, ntree=2000, maxnodes=1000)
+predictions = predict(rfm_2k_1k, test)
+print(sprintf("Mean error RFM_2K_1K: %s", toString(sqrt(mean((predictions-test$price)^2)))))
+```
+
+Better but not quite sufficient accuracy. The next iteration will have 3000 trees and no limit on the nodes.
+```{r}
+rfm_3k = randomForest(price~., data=train, ntree=3000)
+predictions = predict(rfm_3k, test)
+print(sprintf("Mean error RFM_3K: %s", toString(sqrt(mean((predictions-test$price)^2)))))
+```
+
+Although this is the best model so far, there is still a significant error. Obviously by increasing the number of trees indefinitely one would hit the computational limit of the single machine resources that R uses. Another approach is to try to cluster the houses into distinctive groups (unsupervised learning) and train the random forest for each cluster separately.
+
+## Clustering the Data
+
+Expectation Minimization clustering will be employed to do the clustering. An good initial number of clusters could be K=5.
+
+```{r}
+library(EMCluster)
+emc = shortemcluster(data, simple.init(data, nclass = 5))
+emc = emcluster(data, emc, assign.class=T)
+```
+
+Looks like EM clustering cannot find a stable solution. So another clustering technique should be used. KMeans clustering is an alternative.
+
+```{r}
+kdata = kmeans(data, centers=5)
+ktrain = subset(kdata$cluster[], datasplit==F)
+ktest = subset(kdata$cluster[], datasplit==T)
+```
+
+## Training Random Forest Model For Each Cluster Separately
+
+After the clustering is finished, allocating the train and test data for each cluster:
+
+```{r}
+train1 = subset(train[], ktrain == 1)
+train2 = subset(train[], ktrain == 2)
+train3 = subset(train[], ktrain == 3)
+train4 = subset(train[], ktrain == 4)
+train5 = subset(train[], ktrain == 5)
+
+test1 = subset(test[], ktest == 1)
+test2 = subset(test[], ktest == 2)
+test3 = subset(test[], ktest == 3)
+test4 = subset(test[], ktest == 4)
+test5 = subset(test[], ktest == 5)
+```
+
+Training models separately for each cluster:
+```{r}
+require(randomForest)
+rfm1 = randomForest(price~., data=train1, ntrees=3000)
+rfm2 = randomForest(price~., data=train2, ntrees=3000)
+rfm3 = randomForest(price~., data=train3, ntrees=3000)
+rfm4 = randomForest(price~., data=train4, ntrees=3000)
+rfm5 = randomForest(price~., data=train5, ntrees=3000)
+```
+
+After models are trained, obtaining predictions over the test data for each of the clusters:
+```{r}
+preds1 = predict(rfm1, test1)
+preds2 = predict(rfm2, test2)
+preds3 = predict(rfm3, test3)
+preds4 = predict(rfm4, test4)
+preds5 = predict(rfm5, test5)
+```
+
+The errors can be computed as follows (head used here to avoid R returning NA mean values):
+```{r}
+err1 = mean(head(sqrt((test1$price-preds1)^2)[]), nrow(test1))
+err2 = mean(head(sqrt((test2$price-preds2)^2)[]), nrow(test2))
+err3 = mean(head(sqrt((test3$price-preds3)^2)[]), nrow(test3))
+err4 = mean(head(sqrt((test4$price-preds4)^2)[]), nrow(test4))
+err5 = mean(head(sqrt((test5$price-preds5)^2)[]), nrow(test5))
+plot(c(nrow(test1), nrow(test2), nrow(test3), nrow(test4), nrow(test5)), c(err1, err2, err3, err4, err5), xlab="Num. of instances", ylab="Test error", main ="Cluster test errors with respect to cluster sizes")
+```
+
+As it can be seen, the larger the cluster, the lower the mean error tends to be. This is desirable since the largest cluster will have the biggest impact on the accuracy. The mean error across all clusters is now much better than by using the single RF model:
+```{r}
+err = nrow(test1)/nrow(test)*err1 + nrow(test2)/nrow(test)*err2 + nrow(test3)/nrow(test)*err3 + nrow(test4)/nrow(test)*err4 + nrow(test5)/nrow(test)*err5
+print(sprintf("Weighted mean error: %s", toString(err)))
+```
+
+## Conclusion
+
+Different techniques had been employed to solve this regression problem of predicitng the home sale prices. It has been demonstrated that when a single supervised approach is combined with unsupervised preparation step to discover unknown data patterns, the predictions can be significantly more accurate. In addition, this unsupervised examination splits the data into chunks which are smaller in size which eases the computational requirements to train the supervised learning models. The expected mean error of the combined model is more then three times smaller than the best RF model.
+Finally, the results could've been better if parameters such as number of clusters, number of trees, etc were funed-tuned with even more iterations.
